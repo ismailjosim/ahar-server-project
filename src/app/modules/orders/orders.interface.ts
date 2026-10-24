@@ -27,6 +27,8 @@ export interface CreateOrderPayload {
   paymentMethod: string;
   couponCode?: string;
   userId?: string;
+  senderPhone?: string;
+  providerTransactionId?: string;
 }
 
 export interface OrderItemRecord {

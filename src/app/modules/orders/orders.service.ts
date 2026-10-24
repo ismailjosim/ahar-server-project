@@ -1,4 +1,10 @@
-import { FulfillmentType, PaymentMethod, PaymentStatus } from '@generated/prisma/enums';
+import {
+  FulfillmentType,
+  OrderStatus,
+  PaymentMethod,
+  PaymentProvider,
+  PaymentStatus,
+} from '@generated/prisma/enums';
 import type { OrderItemUncheckedCreateWithoutOrderInput } from '@generated/prisma/models/OrderItem';
 
 import { prisma } from '@/config/prisma.config';
@@ -6,64 +12,16 @@ import AppError from '@/helpers/AppError';
 import { InventoryService } from '@/modules/inventory/inventory.service';
 import { calculatePagination } from '@/utils/paginationHelper';
 import { EmailService } from '@/utils/sendEmail';
+import { emitEvent } from '@/utils/socket';
 import StatusCode from '@/utils/statusCode';
 
-import { CreateOrderPayload, OrderRecord } from './orders.interface';
-import { fromDbOrderStatus, fromDbPaymentStatus, toDbOrderStatus } from './orders.utils';
-
-const capitalize = (value: string) =>
-  value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
-
-const toClient = (order: OrderRecord | null) => {
-  if (!order) return null;
-  return {
-    id: order.id,
-    customer: order.customerName,
-    customerName: order.customerName,
-    phone: order.phone,
-    email: order.email,
-    fulfillmentType: order.fulfillmentType,
-    itemSummary: order.itemSummary,
-    items: (order.items ?? []).map((item) => ({
-      id: item.id,
-      orderId: item.orderId,
-      menuItemId: item.menuItemId,
-      nameSnapshot: item.nameSnapshot,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      lineTotal: item.lineTotal,
-      notes: null,
-      menuItem: {
-        id: item.menuItemId || '',
-        name: item.nameSnapshot,
-        price: item.unitPrice,
-      },
-    })),
-    // `lineItems` carries the structured breakdown for the tracking page.
-    lineItems: (order.items ?? []).map((item) => ({
-      name: item.nameSnapshot,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      lineTotal: item.lineTotal,
-      variant: item.selectedVariant ?? null,
-      addOns: item.selectedAddOns ?? null,
-    })),
-    address: order.address,
-    notes: order.notes,
-    subtotal: order.subtotal,
-    deliveryFee: order.deliveryFee,
-    vat: order.vat,
-    serviceCharge: order.serviceCharge,
-    discount: order.discount,
-    total: order.total,
-    method: order.paymentMethod,
-    paymentMethod: order.paymentMethod,
-    paymentStatus: fromDbPaymentStatus(order.paymentStatus),
-    status: fromDbOrderStatus(order.status),
-    type: capitalize(order.fulfillmentType),
-    createdAt: order.createdAt,
-  };
-};
+import { CreateOrderPayload } from './orders.interface';
+import {
+  fromDbOrderStatus,
+  toClientOrder as toClient,
+  toDbOrderStatus,
+  VALID_ORDER_TRANSITIONS as VALID_TRANSITIONS,
+} from './orders.utils';
 
 const getOrders = async (query: Record<string, unknown>) => {
   const { page, limit, skip } = calculatePagination({
@@ -235,7 +193,25 @@ const createOrder = async (payload: CreateOrderPayload) => {
     include: { items: true },
   });
 
-  // For COD, payment is tracked directly on Order (paymentStatus: PENDING until Delivered)
+  // For mobile banking (bKash / Nagad), create linked Payment record for cashier reconciliation
+  if (['BKASH', 'NAGAD'].includes(order.paymentMethod)) {
+    const provider = order.paymentMethod as unknown as PaymentProvider;
+    await prisma.payment
+      .create({
+        data: {
+          orderId: order.id,
+          amount: order.total,
+          provider,
+          method: order.paymentMethod,
+          providerTransactionId: payload.providerTransactionId || undefined,
+          status: PaymentStatus.PENDING,
+          verificationPayload: payload.senderPhone
+            ? { senderPhone: payload.senderPhone }
+            : undefined,
+        },
+      })
+      .catch((err) => console.error('[Payment] Creation failed:', err));
+  }
 
   // Send order confirmation email
   if (order.email) {
@@ -254,42 +230,41 @@ const createOrder = async (payload: CreateOrderPayload) => {
     }).catch((err) => console.error('[Email] Order confirmation failed:', err));
   }
 
-  return toClient(order);
+  const clientOrder = toClient(order);
+  emitEvent('order:new', clientOrder);
+  return clientOrder;
 };
 
-const VALID_TRANSITIONS: Record<string, string[]> = {
-  Placed: ['Accepted', 'Cancelled'],
-  Accepted: ['Preparing', 'Cancelled'],
-  Preparing: ['Ready'],
-  Ready: ['Out for Delivery', 'Delivered'],
-  'Out for Delivery': ['Delivered'],
-  Delivered: [],
-  Cancelled: [],
-};
-
-const updateOrderStatus = async (id: string, status: string) => {
+const updateOrderStatus = async (id: string, statusInput: string) => {
   const order = await prisma.order.findUnique({
     where: { id },
     include: { items: true },
   });
   if (!order) throw new AppError(StatusCode.NOT_FOUND, 'Order not found');
 
-  const current = fromDbOrderStatus(order.status);
-  const allowed = VALID_TRANSITIONS[current] ?? [];
-  if (!allowed.includes(status)) {
+  const targetDbStatus = toDbOrderStatus(statusInput);
+  const targetPascalStatus = fromDbOrderStatus(targetDbStatus);
+
+  const currentPascalStatus = fromDbOrderStatus(order.status);
+  const allowed = VALID_TRANSITIONS[currentPascalStatus] ?? [];
+  if (!allowed.includes(targetPascalStatus) && currentPascalStatus !== targetPascalStatus) {
     throw new AppError(
       StatusCode.BAD_REQUEST,
-      `Cannot transition from "${current}" to "${status}".`,
+      `Cannot transition from "${currentPascalStatus}" to "${targetPascalStatus}".`,
     );
   }
 
   const updateData: Record<string, unknown> = {
-    status: toDbOrderStatus(status),
+    status: targetDbStatus,
   };
 
   // Trigger inventory deduction when order is Accepted, Preparing, or Delivered (idempotent)
-  const INVENTORY_DEDUCT_STATUSES = ['Accepted', 'Preparing', 'Delivered'];
-  if (INVENTORY_DEDUCT_STATUSES.includes(status)) {
+  const INVENTORY_DEDUCT_STATUSES: OrderStatus[] = [
+    OrderStatus.ACCEPTED,
+    OrderStatus.PREPARING,
+    OrderStatus.DELIVERED,
+  ];
+  if (INVENTORY_DEDUCT_STATUSES.includes(targetDbStatus)) {
     const alreadyDeducted = await prisma.inventoryAudit.findFirst({
       where: { reason: { contains: `[Order #${id}]` } },
     });
@@ -304,7 +279,7 @@ const updateOrderStatus = async (id: string, status: string) => {
   }
 
   // When transitioning to "Delivered", mark COD payment as completed
-  if (status === 'Delivered') {
+  if (targetDbStatus === OrderStatus.DELIVERED) {
     await prisma.payment.updateMany({
       where: {
         orderId: id,
@@ -326,16 +301,18 @@ const updateOrderStatus = async (id: string, status: string) => {
 
   // Send status update email for key statuses
   const NOTIFY_STATUSES = ['Accepted', 'Out for Delivery', 'Delivered', 'Cancelled'];
-  if (NOTIFY_STATUSES.includes(status) && updated.email) {
+  if (NOTIFY_STATUSES.includes(targetPascalStatus) && updated.email) {
     EmailService.sendOrderStatusUpdate({
       customerName: updated.customerName,
       email: updated.email,
       id: updated.id,
-      status,
+      status: targetPascalStatus,
     }).catch((err) => console.error('[Email] Status update failed:', err));
   }
 
-  return toClient(updated);
+  const clientUpdated = toClient(updated);
+  emitEvent('order:status_updated', clientUpdated);
+  return clientUpdated;
 };
 
 const getOrdersByUser = async (userId: string, query: Record<string, unknown>) => {

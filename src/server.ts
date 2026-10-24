@@ -2,9 +2,10 @@ import { type Server } from 'node:http';
 
 import { envVars } from '@/config/env';
 import { prisma } from '@/config/prisma.config';
-
 // import { seedMenu } from '@/seed/menu.seed'
 // import { ensureSuperAdmin } from '@/seed/superAdmin.seed'
+import { initSocket } from '@/utils/socket';
+
 import app from './app';
 
 let server: Server;
@@ -24,6 +25,8 @@ async function bootstrap() {
     server = app.listen(envVars.PORT, () => {
       console.log(`Server is running on PORT: ${envVars.PORT}`);
     });
+
+    initSocket(server);
 
     server.on('close', () => {
       console.log('HTTP server closed.');

@@ -1,26 +1,44 @@
 import { OrderStatus, PaymentStatus } from '@generated/prisma/enums';
 
-export const toDbOrderStatus = (status?: string) => {
-  switch (status) {
-    case 'Accepted':
+import { OrderItemRecord, OrderRecord } from './orders.interface';
+
+export const normalizeOrderStatus = (status?: string): OrderStatus => {
+  if (!status) return OrderStatus.PLACED;
+  const clean = status
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  switch (clean) {
+    case 'ACCEPTED':
       return OrderStatus.ACCEPTED;
-    case 'Preparing':
+    case 'PREPARING':
       return OrderStatus.PREPARING;
-    case 'Ready':
+    case 'READY':
       return OrderStatus.READY;
-    case 'Out for Delivery':
+    case 'OUT_FOR_DELIVERY':
       return OrderStatus.OUT_FOR_DELIVERY;
-    case 'Delivered':
+    case 'DELIVERED':
       return OrderStatus.DELIVERED;
-    case 'Cancelled':
+    case 'CANCELLED':
       return OrderStatus.CANCELLED;
+    case 'PLACED':
     default:
       return OrderStatus.PLACED;
   }
 };
 
-export const fromDbOrderStatus = (status: OrderStatus) => {
-  switch (status) {
+export const toDbOrderStatus = (status?: string): OrderStatus => {
+  return normalizeOrderStatus(status);
+};
+
+export const fromDbOrderStatus = (status?: OrderStatus | string): string => {
+  const norm = normalizeOrderStatus(typeof status === 'string' ? status : undefined);
+  // If status is a direct OrderStatus enum instance
+  const effectiveStatus = Object.values(OrderStatus).includes(status as OrderStatus)
+    ? (status as OrderStatus)
+    : norm;
+
+  switch (effectiveStatus) {
     case OrderStatus.ACCEPTED:
       return 'Accepted';
     case OrderStatus.PREPARING:
@@ -33,6 +51,7 @@ export const fromDbOrderStatus = (status: OrderStatus) => {
       return 'Delivered';
     case OrderStatus.CANCELLED:
       return 'Cancelled';
+    case OrderStatus.PLACED:
     default:
       return 'Placed';
   }
@@ -62,4 +81,68 @@ export const fromDbPaymentStatus = (status: PaymentStatus) => {
     default:
       return 'Pending';
   }
+};
+
+export const capitalize = (value: string) =>
+  value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+
+export const VALID_ORDER_TRANSITIONS: Record<string, string[]> = {
+  Placed: ['Accepted', 'Cancelled'],
+  Accepted: ['Preparing', 'Cancelled'],
+  Preparing: ['Ready'],
+  Ready: ['Out for Delivery', 'Delivered'],
+  'Out for Delivery': ['Delivered'],
+  Delivered: [],
+  Cancelled: [],
+};
+
+export const toClientOrder = (order?: OrderRecord | null) => {
+  if (!order) return null;
+  return {
+    id: order.id,
+    customer: order.customerName,
+    customerName: order.customerName,
+    phone: order.phone,
+    email: order.email,
+    fulfillmentType: order.fulfillmentType,
+    itemSummary: order.itemSummary,
+    items: (order.items ?? []).map((item: OrderItemRecord) => ({
+      id: item.id,
+      orderId: item.orderId,
+      menuItemId: item.menuItemId,
+      nameSnapshot: item.nameSnapshot,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      lineTotal: item.lineTotal,
+      notes: null,
+      menuItem: {
+        id: item.menuItemId || '',
+        name: item.nameSnapshot,
+        price: item.unitPrice,
+      },
+    })),
+    // lineItems carries the structured breakdown for the tracking page
+    lineItems: (order.items ?? []).map((item: OrderItemRecord) => ({
+      name: item.nameSnapshot,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      lineTotal: item.lineTotal,
+      variant: item.selectedVariant ?? null,
+      addOns: item.selectedAddOns ?? null,
+    })),
+    address: order.address,
+    notes: order.notes,
+    subtotal: order.subtotal,
+    deliveryFee: order.deliveryFee,
+    vat: order.vat,
+    serviceCharge: order.serviceCharge,
+    discount: order.discount,
+    total: order.total,
+    method: order.paymentMethod,
+    paymentMethod: order.paymentMethod,
+    paymentStatus: fromDbPaymentStatus(order.paymentStatus),
+    status: fromDbOrderStatus(order.status),
+    type: capitalize(order.fulfillmentType),
+    createdAt: order.createdAt,
+  };
 };

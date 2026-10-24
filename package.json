@@ -36,6 +36,7 @@
     "nodemailer": "^7.0.10",
     "pg": "^8.21.0",
     "slugify": "^1.6.9",
+    "socket.io": "^4.8.4",
     "sslcommerz-lts": "^1.2.0",
     "uuid": "^13.0.0",
     "zod": "^4.1.12"

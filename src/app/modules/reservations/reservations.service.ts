@@ -4,73 +4,18 @@ import { prisma } from '@/config/prisma.config';
 import AppError from '@/helpers/AppError';
 import { calculatePagination } from '@/utils/paginationHelper';
 import { EmailService } from '@/utils/sendEmail';
+import { emitEvent } from '@/utils/socket';
 import StatusCode from '@/utils/statusCode';
 
+import {
+  fromStatus,
+  parseReservationDate,
+  toClientReservation as toClient,
+  toStatus,
+  VALID_RESERVATION_TRANSITIONS as VALID_TRANSITIONS,
+} from './reservations.utils';
+
 type ReservationPayload = Record<string, unknown>;
-
-// ── Status helpers ────────────────────────────────────────────────────────────
-
-/** Map client-facing string → DB enum */
-const toStatus = (status?: string): ReservationStatus => {
-  switch (status) {
-    case 'Approved':
-      return ReservationStatus.APPROVED;
-    case 'Rejected':
-      return ReservationStatus.REJECTED;
-    case 'Cancelled':
-      return ReservationStatus.CANCELLED;
-    default:
-      return ReservationStatus.PENDING;
-  }
-};
-
-/** Map DB enum → client-facing string */
-const fromStatus = (status: ReservationStatus): string => {
-  switch (status) {
-    case ReservationStatus.APPROVED:
-      return 'Approved';
-    case ReservationStatus.REJECTED:
-      return 'Rejected';
-    case ReservationStatus.CANCELLED:
-      return 'Cancelled';
-    default:
-      return 'Pending';
-  }
-};
-
-/** Valid status transitions. Empty array = terminal state. */
-const VALID_TRANSITIONS: Record<string, string[]> = {
-  Pending: ['Approved', 'Rejected', 'Cancelled'],
-  Approved: ['Cancelled'],
-  Rejected: [],
-  Cancelled: [],
-};
-
-// ── Date helper ───────────────────────────────────────────────────────────────
-
-const parseReservationDate = (value: unknown) => {
-  const date = new Date(String(value || ''));
-  return Number.isNaN(date.getTime()) ? new Date() : date;
-};
-
-// ── Response shaper ───────────────────────────────────────────────────────────
-
-const toClient = (reservation: Awaited<ReturnType<typeof prisma.reservation.findFirst>>) => {
-  if (!reservation) return null;
-  return {
-    id: reservation.id,
-    customer: reservation.customerName,
-    phone: reservation.phone,
-    email: reservation.email ?? null,
-    guests: reservation.guests,
-    time: reservation.displayTime || reservation.reservationTime.toISOString(),
-    table: reservation.tableCode || 'TBD',
-    status: fromStatus(reservation.status),
-    occasion: reservation.occasion ?? null,
-    notes: reservation.notes ?? null,
-    userId: reservation.userId ?? null,
-  };
-};
 
 // ── Conflict detection ────────────────────────────────────────────────────────
 
@@ -211,7 +156,9 @@ const createReservation = async (payload: ReservationPayload, userId?: string) =
     tableCode: reservation.tableCode ?? undefined,
   }).catch((err) => console.error('[Email] Reservation confirmation failed:', err));
 
-  return toClient(reservation);
+  const clientRes = toClient(reservation);
+  emitEvent('reservation:new', clientRes);
+  return clientRes;
 };
 
 const updateReservation = async (id: string, payload: ReservationPayload) => {

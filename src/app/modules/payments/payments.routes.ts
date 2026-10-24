@@ -32,7 +32,7 @@ router.post(
 // owner+ can update payment status (refunds, manual corrections)
 router.patch(
   '/:id',
-  checkAuth(UserRole.OWNER, UserRole.SUPER_ADMIN),
+  checkAuth(UserRole.MANAGER, UserRole.OWNER, UserRole.SUPER_ADMIN),
   validateRequest(PaymentsValidation.updatePayment),
   PaymentsController.updatePayment,
 );

@@ -44,6 +44,19 @@ const createOrder = z.object({
     // Payment
     paymentMethod: z.enum(['COD', 'SSLCOMMERZ', 'BKASH', 'NAGAD']),
 
+    // Mobile banking / provider transaction details
+    senderPhone: z
+      .string()
+      .trim()
+      .regex(BD_PHONE_REGEX, 'Invalid sender BD phone number')
+      .optional(),
+    providerTransactionId: z
+      .string()
+      .trim()
+      .min(3, 'Transaction ID must be at least 3 characters')
+      .max(100)
+      .optional(),
+
     // Coupon
     couponCode: z.string().trim().optional(),
   }),
@@ -55,15 +68,26 @@ const updateOrderStatus = z.object({
   }),
 
   body: z.object({
-    status: z.enum([
-      'PLACED',
-      'ACCEPTED',
-      'PREPARING',
-      'READY',
-      'OUT_FOR_DELIVERY',
-      'DELIVERED',
-      'CANCELLED',
-    ]),
+    status: z.preprocess(
+      (val) => {
+        if (typeof val === 'string') {
+          return val
+            .trim()
+            .toUpperCase()
+            .replace(/[\s-]+/g, '_');
+        }
+        return val;
+      },
+      z.enum([
+        'PLACED',
+        'ACCEPTED',
+        'PREPARING',
+        'READY',
+        'OUT_FOR_DELIVERY',
+        'DELIVERED',
+        'CANCELLED',
+      ]),
+    ),
   }),
 });
 

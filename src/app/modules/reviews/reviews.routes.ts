@@ -20,10 +20,20 @@ router.post(
   ReviewController.createReview,
 );
 
-// Admin / Manager routes
+// GET /reviews - Public when querying approved reviews; staff auth required for full moderation list
 router.get(
   '/',
-  checkAuth(UserRole.CASHIER, UserRole.MANAGER, UserRole.OWNER, UserRole.SUPER_ADMIN),
+  (req, res, next) => {
+    if (req.query.isApproved === 'true') {
+      return next();
+    }
+    return checkAuth(
+      UserRole.CASHIER,
+      UserRole.MANAGER,
+      UserRole.OWNER,
+      UserRole.SUPER_ADMIN,
+    )(req, res, next);
+  },
   validateRequest(ReviewValidation.getReviews),
   ReviewController.getAllReviews,
 );
