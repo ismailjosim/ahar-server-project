@@ -5,7 +5,7 @@ const BD_PHONE_REGEX = /^(?:\+?880|0)?1[3-9]\d{8}$/;
 const orderItemBody = z.object({
   menuItemId: z.string().optional(),
 
-  nameSnapshot: z.string().trim().min(1, 'Item name is required'),
+  nameSnapshot: z.string().trim().optional(),
 
   quantity: z
     .number()
@@ -18,7 +18,7 @@ const orderItemBody = z.object({
 
   selectedAddOns: z.array(z.unknown()).optional(),
 
-  lineTotal: z.number().positive('Line total must be greater than 0'),
+  lineTotal: z.number().positive('Line total must be greater than 0').optional(),
 });
 
 const createOrder = z.object({
@@ -28,37 +28,52 @@ const createOrder = z.object({
 
     phone: z.string().trim().regex(BD_PHONE_REGEX, 'Invalid BD phone number'),
 
-    email: z.string().trim().email('Invalid email address').optional(),
+    email: z.preprocess(
+      (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+      z.string().trim().email('Invalid email address').optional(),
+    ),
 
     // Fulfillment
-    fulfillmentType: z.enum(['DELIVERY', 'PICKUP']),
+    fulfillmentType: z.preprocess(
+      (val) => (typeof val === 'string' ? val.trim().toUpperCase() : val),
+      z.enum(['DELIVERY', 'PICKUP']),
+    ),
 
     // Items
     items: z.array(orderItemBody).min(1, 'Order must have at least one item'),
 
     // Delivery
-    address: z.string().trim().min(5, 'Address must be at least 5 characters').optional(),
+    address: z.preprocess(
+      (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+      z.string().trim().min(5, 'Address must be at least 5 characters').optional(),
+    ),
 
-    notes: z.string().trim().max(500, 'Notes cannot exceed 500 characters').optional(),
+    notes: z.preprocess(
+      (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+      z.string().trim().max(500, 'Notes cannot exceed 500 characters').optional(),
+    ),
 
     // Payment
-    paymentMethod: z.enum(['COD', 'SSLCOMMERZ', 'BKASH', 'NAGAD']),
+    paymentMethod: z.preprocess(
+      (val) => (typeof val === 'string' ? val.trim().toUpperCase() : val),
+      z.enum(['COD', 'SSLCOMMERZ', 'BKASH', 'NAGAD', 'CARD']),
+    ),
 
     // Mobile banking / provider transaction details
-    senderPhone: z
-      .string()
-      .trim()
-      .regex(BD_PHONE_REGEX, 'Invalid sender BD phone number')
-      .optional(),
-    providerTransactionId: z
-      .string()
-      .trim()
-      .min(3, 'Transaction ID must be at least 3 characters')
-      .max(100)
-      .optional(),
+    senderPhone: z.preprocess(
+      (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+      z.string().trim().regex(BD_PHONE_REGEX, 'Invalid sender BD phone number').optional(),
+    ),
+    providerTransactionId: z.preprocess(
+      (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+      z.string().trim().min(3, 'Transaction ID must be at least 3 characters').max(100).optional(),
+    ),
 
     // Coupon
-    couponCode: z.string().trim().optional(),
+    couponCode: z.preprocess(
+      (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+      z.string().trim().optional(),
+    ),
   }),
 });
 

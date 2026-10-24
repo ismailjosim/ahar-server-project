@@ -83,6 +83,18 @@ const createOrder = async (payload: CreateOrderPayload) => {
   const vatRate = settings ? settings.vatRate / 100 : 0.05;
   const serviceChargeRate = settings ? settings.serviceChargeRate / 100 : 0.1;
 
+  // If order was placed as guest but matches a registered user's email, automatically link it
+  let targetUserId = payload.userId ?? null;
+  if (!targetUserId && payload.email) {
+    const matchedUser = await prisma.user.findFirst({
+      where: { email: { equals: payload.email, mode: 'insensitive' as const } },
+      select: { id: true },
+    });
+    if (matchedUser) {
+      targetUserId = matchedUser.id;
+    }
+  }
+
   const jsonInput = (value: unknown) =>
     value as OrderItemUncheckedCreateWithoutOrderInput['selectedVariant'];
 
@@ -93,12 +105,12 @@ const createOrder = async (payload: CreateOrderPayload) => {
         // Custom items without a menuItemId fall back to the client price.
         return {
           menuItemId: null,
-          nameSnapshot: item.nameSnapshot,
+          nameSnapshot: item.nameSnapshot || 'Custom Item',
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           selectedVariant: jsonInput(item.selectedVariant ?? undefined),
           selectedAddOns: jsonInput(item.selectedAddOns ?? undefined),
-          lineTotal: item.unitPrice * item.quantity,
+          lineTotal: item.lineTotal || item.unitPrice * item.quantity,
         };
       }
 
@@ -106,7 +118,10 @@ const createOrder = async (payload: CreateOrderPayload) => {
         where: { id: item.menuItemId },
       });
       if (!dbItem || !dbItem.isAvailable) {
-        throw new AppError(StatusCode.BAD_REQUEST, `Item "${item.nameSnapshot}" is not available.`);
+        throw new AppError(
+          StatusCode.BAD_REQUEST,
+          `Item "${item.nameSnapshot || item.menuItemId}" is not available.`,
+        );
       }
 
       const unitPrice = dbItem.price;
@@ -157,7 +172,7 @@ const createOrder = async (payload: CreateOrderPayload) => {
   }
 
   let deliveryFee = 0;
-  if (payload.fulfillmentType === 'delivery') {
+  if (payload.fulfillmentType.toUpperCase() === 'DELIVERY') {
     const fee = settings?.deliveryFee ?? 80;
     const freeMin = settings?.freeDeliveryMin ?? 0;
     const isFree = freeMin > 0 && subtotal >= freeMin;
@@ -187,7 +202,7 @@ const createOrder = async (payload: CreateOrderPayload) => {
       discount,
       total,
       paymentMethod: payload.paymentMethod.toUpperCase() as PaymentMethod,
-      userId: payload.userId ?? null,
+      userId: targetUserId,
       items: { create: items },
     },
     include: { items: true },
@@ -316,20 +331,42 @@ const updateOrderStatus = async (id: string, statusInput: string) => {
 };
 
 const getOrdersByUser = async (userId: string, query: Record<string, unknown>) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  });
+
+  if (user?.email) {
+    // Retroactively link any past guest orders matching this user's email
+    await prisma.order.updateMany({
+      where: {
+        userId: null,
+        email: { equals: user.email, mode: 'insensitive' as const },
+      },
+      data: { userId },
+    });
+  }
+
   const { page, limit, skip } = calculatePagination({
     page: Number(query.page || 1),
     limit: Number(query.limit || query.pageSize || 5),
   });
 
+  const where = user?.email
+    ? {
+        OR: [{ userId }, { email: { equals: user.email, mode: 'insensitive' as const } }],
+      }
+    : { userId };
+
   const [data, total] = await Promise.all([
     prisma.order.findMany({
-      where: { userId },
+      where,
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
       include: { items: true },
     }),
-    prisma.order.count({ where: { userId } }),
+    prisma.order.count({ where }),
   ]);
 
   return { data: data.map(toClient), total, page, limit };

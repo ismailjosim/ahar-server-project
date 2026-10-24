@@ -11,6 +11,13 @@ const router = Router();
 
 // Public — customers place orders (optionalAuth links order to account if logged in)
 router.post(
+  '/',
+  optionalAuth,
+  validateRequest(OrdersValidation.createOrder),
+  OrdersController.createOrder,
+);
+
+router.post(
   '/create',
   optionalAuth,
   validateRequest(OrdersValidation.createOrder),
